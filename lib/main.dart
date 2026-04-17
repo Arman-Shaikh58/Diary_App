@@ -11,12 +11,18 @@ import 'screens/home_screen.dart';
 import 'screens/diary_editor_screen.dart';
 import 'screens/image_viewer_screen.dart';
 import 'services/api_service.dart';
+import 'services/notification_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize API service singleton
   ApiService();
+
+  // Initialize notifications and schedule daily 10 PM reminder
+  await NotificationService.instance.initialize();
+  await NotificationService.instance.requestPermission();
+  await NotificationService.instance.scheduleDailyReminder();
 
   // Set system UI overlay style
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
