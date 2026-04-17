@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -29,10 +30,14 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
   String? _selectedMood;
   String? _entryId;
   List<Map<String, dynamic>> _images = [];
-  bool _hasUnsavedChanges = false;
   bool _isInitialLoad = true;
   late AnimationController _animController;
   late Animation<double> _fadeAnimation;
+
+  // Auto-save state
+  Timer? _autoSaveTimer;
+  _SaveStatus _saveStatus = _SaveStatus.idle;
+  bool _isSavingInProgress = false;
 
   @override
   void initState() {
@@ -48,13 +53,13 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
 
     _quillController.document.changes.listen((_) {
       if (!_isInitialLoad) {
-        _hasUnsavedChanges = true;
+        _triggerAutoSave();
       }
     });
 
     _titleController.addListener(() {
       if (!_isInitialLoad) {
-        _hasUnsavedChanges = true;
+        _triggerAutoSave();
       }
     });
 
@@ -63,41 +68,107 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     });
   }
 
+  // ─── Auto-save Logic ─────────────────────────────────────────────
+
+  /// Debounced auto-save: triggers 2 seconds after the last change.
+  void _triggerAutoSave() {
+    _autoSaveTimer?.cancel();
+    if (_saveStatus != _SaveStatus.saving) {
+      setState(() => _saveStatus = _SaveStatus.unsaved);
+    }
+    _autoSaveTimer = Timer(const Duration(seconds: 2), () {
+      _saveEntry();
+    });
+  }
+
+  Future<void> _saveEntry() async {
+    if (_isSavingInProgress) return;
+    _isSavingInProgress = true;
+
+    if (mounted) {
+      setState(() => _saveStatus = _SaveStatus.saving);
+    }
+
+    final diaryProvider = context.read<DiaryProvider>();
+    final content = jsonEncode(_quillController.document.toDelta().toJson());
+
+    try {
+      final success = await diaryProvider.saveEntry(
+        entryDate: widget.date,
+        content: content,
+        title: _titleController.text.isNotEmpty ? _titleController.text : null,
+        mood: _selectedMood,
+      );
+
+      if (success && mounted) {
+        _entryId = diaryProvider.currentEntry?['id'];
+        setState(() => _saveStatus = _SaveStatus.saved);
+        // Reset to idle after 3 seconds
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted && _saveStatus == _SaveStatus.saved) {
+            setState(() => _saveStatus = _SaveStatus.idle);
+          }
+        });
+      } else if (mounted) {
+        // Save queued for retry
+        setState(() => _saveStatus = _SaveStatus.queued);
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted && _saveStatus == _SaveStatus.queued) {
+            setState(() => _saveStatus = _SaveStatus.idle);
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('⚠️ Auto-save error: $e');
+      if (mounted) {
+        setState(() => _saveStatus = _SaveStatus.error);
+      }
+    }
+
+    _isSavingInProgress = false;
+  }
+
+  // ─── Load Entry ──────────────────────────────────────────────────
+
   Future<void> _loadEntry() async {
     final diaryProvider = context.read<DiaryProvider>();
-    await diaryProvider.loadEntryByDate(widget.date);
 
-    final entry = diaryProvider.currentEntry;
-    if (entry != null) {
-      _entryId = entry['id'];
-      _titleController.text = entry['title'] ?? '';
-      _selectedMood = entry['mood'];
+    try {
+      await diaryProvider.loadEntryByDate(widget.date);
 
-      // Load quill content
-      final content = entry['content'];
-      if (content != null && content.toString().isNotEmpty) {
-        try {
-          final delta = Document.fromJson(jsonDecode(content));
-          _quillController = QuillController(
-            document: delta,
-            selection: const TextSelection.collapsed(offset: 0),
-          );
-          _quillController.document.changes.listen((_) {
-            if (!_isInitialLoad) {
-              _hasUnsavedChanges = true;
-            }
-          });
-        } catch (_) {
-          // If content is plain text, set it directly
-          _quillController = QuillController(
-            document: Document()..insert(0, content.toString()),
-            selection: const TextSelection.collapsed(offset: 0),
-          );
+      final entry = diaryProvider.currentEntry;
+      if (entry != null) {
+        _entryId = entry['id'];
+        _titleController.text = entry['title'] ?? '';
+        _selectedMood = entry['mood'];
+
+        // Load quill content
+        final content = entry['content'];
+        if (content != null && content.toString().isNotEmpty) {
+          try {
+            final delta = Document.fromJson(jsonDecode(content));
+            _quillController = QuillController(
+              document: delta,
+              selection: const TextSelection.collapsed(offset: 0),
+            );
+            _quillController.document.changes.listen((_) {
+              if (!_isInitialLoad) {
+                _triggerAutoSave();
+              }
+            });
+          } catch (_) {
+            _quillController = QuillController(
+              document: Document()..insert(0, content.toString()),
+              selection: const TextSelection.collapsed(offset: 0),
+            );
+          }
         }
-      }
 
-      // Load images
-      _images = List<Map<String, dynamic>>.from(entry['images'] ?? []);
+        // Load images
+        _images = List<Map<String, dynamic>>.from(entry['images'] ?? []);
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error loading entry for ${widget.date}: $e');
     }
 
     _isInitialLoad = false;
@@ -105,37 +176,7 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     if (mounted) setState(() {});
   }
 
-  Future<void> _saveEntry() async {
-    final diaryProvider = context.read<DiaryProvider>();
-    final content = jsonEncode(_quillController.document.toDelta().toJson());
-
-    final success = await diaryProvider.saveEntry(
-      entryDate: widget.date,
-      content: content,
-      title: _titleController.text.isNotEmpty ? _titleController.text : null,
-      mood: _selectedMood,
-    );
-
-    if (success && mounted) {
-      _entryId = diaryProvider.currentEntry?['id'];
-      _hasUnsavedChanges = false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle, color: AppColors.success, size: 18),
-              const SizedBox(width: 8),
-              const Text('Entry saved successfully'),
-            ],
-          ),
-          backgroundColor: AppColors.surface,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-  }
+  // ─── Delete Entry ────────────────────────────────────────────────
 
   Future<void> _deleteEntry() async {
     if (_entryId == null) return;
@@ -181,19 +222,24 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     }
   }
 
+  // ─── Image Handling ──────────────────────────────────────────────
+
   Future<void> _pickImages() async {
+    // If no entry exists yet, auto-save first to create one
     if (_entryId == null) {
-      // Save entry first
       await _saveEntry();
+      // If save failed and we still don't have an entry ID, we can't upload
       if (_entryId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Please save the entry before adding images'),
-            backgroundColor: AppColors.surface,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Unable to save entry. Check your connection.'),
+              backgroundColor: AppColors.surface,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          );
+        }
         return;
       }
     }
@@ -213,7 +259,7 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
         images: files,
       );
 
-      if (uploaded != null) {
+      if (uploaded != null && mounted) {
         setState(() {
           _images.addAll(uploaded);
         });
@@ -247,51 +293,15 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     }
   }
 
-  Future<bool> _onWillPop() async {
-    if (!_hasUnsavedChanges) return true;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text(
-          'Unsaved Changes',
-          style: GoogleFonts.outfit(
-            fontWeight: FontWeight.w600,
-            color: AppColors.textPrimary,
-          ),
-        ),
-        content: const Text(
-          'You have unsaved changes. What would you like to do?',
-          style: TextStyle(color: AppColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'cancel'),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.textHint)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'discard'),
-            child: const Text('Discard', style: TextStyle(color: AppColors.error)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'save'),
-            child: const Text('Save', style: TextStyle(color: AppColors.accent)),
-          ),
-        ],
-      ),
-    );
-
-    if (result == 'save') {
-      await _saveEntry();
-      return true;
-    }
-    return result == 'discard';
-  }
+  // ─── Lifecycle ───────────────────────────────────────────────────
 
   @override
   void dispose() {
+    // Auto-save on exit if there are pending changes
+    _autoSaveTimer?.cancel();
+    if (_saveStatus == _SaveStatus.unsaved) {
+      _saveEntrySync();
+    }
     _animController.dispose();
     _quillController.dispose();
     _titleController.dispose();
@@ -300,6 +310,94 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     super.dispose();
   }
 
+  /// Fire-and-forget save for dispose (can't await in dispose)
+  void _saveEntrySync() {
+    final diaryProvider = context.read<DiaryProvider>();
+    final content = jsonEncode(_quillController.document.toDelta().toJson());
+    diaryProvider.saveEntry(
+      entryDate: widget.date,
+      content: content,
+      title: _titleController.text.isNotEmpty ? _titleController.text : null,
+      mood: _selectedMood,
+    );
+  }
+
+  // ─── Save Status Indicator ───────────────────────────────────────
+
+  Widget _buildSaveIndicator() {
+    IconData icon;
+    String label;
+    Color color;
+
+    switch (_saveStatus) {
+      case _SaveStatus.idle:
+        return const SizedBox(width: 48);
+      case _SaveStatus.unsaved:
+        icon = Icons.edit_outlined;
+        label = 'Editing';
+        color = AppColors.textHint;
+      case _SaveStatus.saving:
+        return Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  color: AppColors.primary.withValues(alpha: 0.7),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Saving...',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textHint,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        );
+      case _SaveStatus.saved:
+        icon = Icons.cloud_done_outlined;
+        label = 'Saved';
+        color = AppColors.success;
+      case _SaveStatus.queued:
+        icon = Icons.cloud_queue_outlined;
+        label = 'Queued';
+        color = AppColors.accent;
+      case _SaveStatus.error:
+        icon = Icons.cloud_off_outlined;
+        label = 'Offline';
+        color = AppColors.error;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Build ───────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final diaryProvider = context.watch<DiaryProvider>();
@@ -307,13 +405,10 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
     final formattedDate = DateFormat('EEEE, d MMMM yyyy').format(parsedDate);
 
     return PopScope(
-      canPop: !_hasUnsavedChanges,
-      onPopInvokedWithResult: (didPop, result) async {
-        if (!didPop) {
-          final shouldPop = await _onWillPop();
-          if (shouldPop && mounted) {
-            Navigator.of(context).pop();
-          }
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop && _saveStatus == _SaveStatus.unsaved) {
+          _saveEntrySync();
         }
       },
       child: Scaffold(
@@ -332,16 +427,7 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
                   child: Row(
                     children: [
                       IconButton(
-                        onPressed: () async {
-                          if (_hasUnsavedChanges) {
-                            final shouldPop = await _onWillPop();
-                            if (shouldPop && mounted) {
-                              Navigator.of(context).pop();
-                            }
-                          } else {
-                            Navigator.of(context).pop();
-                          }
-                        },
+                        onPressed: () => Navigator.of(context).pop(),
                         icon: const Icon(Icons.arrow_back_ios_new_rounded,
                             color: AppColors.textPrimary, size: 20),
                       ),
@@ -356,6 +442,8 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
                           ),
                         ),
                       ),
+                      // Save status indicator + delete button
+                      _buildSaveIndicator(),
                       if (_entryId != null)
                         IconButton(
                           onPressed: _deleteEntry,
@@ -431,8 +519,8 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
                                   onMoodSelected: (mood) {
                                     setState(() {
                                       _selectedMood = mood;
-                                      _hasUnsavedChanges = true;
                                     });
+                                    _triggerAutoSave();
                                   },
                                 ),
 
@@ -454,17 +542,16 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
 
                                 const SizedBox(height: 12),
 
-                                // Image strip
-                                if (_images.isNotEmpty || _entryId != null)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: ImageStrip(
-                                      images: _images,
-                                      onAddImage: _pickImages,
-                                      onImageTap: _viewImage,
-                                      onImageDelete: _deleteImage,
-                                    ),
+                                // Image strip — always visible
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: ImageStrip(
+                                    images: _images,
+                                    onAddImage: _pickImages,
+                                    onImageTap: _viewImage,
+                                    onImageDelete: _deleteImage,
                                   ),
+                                ),
 
                                 // Quill editor
                                 Container(
@@ -484,6 +571,7 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
                                     focusNode: _editorFocusNode,
                                     scrollController: _editorScrollController,
                                     config: QuillEditorConfig(
+                                      scrollable: false,
                                       placeholder: 'Write your thoughts...',
                                       padding: const EdgeInsets.all(4),
                                       customStyles: DefaultStyles(
@@ -617,22 +705,18 @@ class _DiaryEditorScreenState extends State<DiaryEditorScreen>
             ),
           ),
         ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: diaryProvider.isSaving ? null : _saveEntry,
-          backgroundColor: AppColors.primary,
-          elevation: 8,
-          child: diaryProvider.isSaving
-              ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
-                )
-              : const Icon(Icons.save_rounded, color: Colors.white),
-        ),
+        // No FAB — auto-save handles everything
       ),
     );
   }
+}
+
+/// Internal save status for the auto-save indicator
+enum _SaveStatus {
+  idle,     // No changes since last save
+  unsaved,  // Changes pending (typing)
+  saving,   // Save in progress
+  saved,    // Successfully saved
+  queued,   // Queued for retry (offline)
+  error,    // Save failed
 }

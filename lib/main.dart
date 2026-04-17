@@ -10,8 +10,11 @@ import 'screens/register_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/diary_editor_screen.dart';
 import 'screens/image_viewer_screen.dart';
+import 'screens/pin_entry_screen.dart';
+import 'screens/pin_setup_screen.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
+import 'services/upload_queue_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,10 +22,11 @@ void main() async {
   // Initialize API service singleton
   ApiService();
 
-  // Initialize notifications and schedule daily 10 PM reminder
-  await NotificationService.instance.initialize();
-  await NotificationService.instance.requestPermission();
-  await NotificationService.instance.scheduleDailyReminder();
+  // Initialize notifications safely (never block app startup)
+  _initNotifications();
+
+  // Initialize offline upload queue
+  UploadQueueService.instance.initialize();
 
   // Set system UI overlay style
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -41,6 +45,18 @@ void main() async {
       child: const MyDiaryApp(),
     ),
   );
+}
+
+/// Initializes notifications in the background without blocking the UI.
+/// Wrapped in try-catch so notification failures never crash the app.
+Future<void> _initNotifications() async {
+  try {
+    await NotificationService.instance.initialize();
+    await NotificationService.instance.requestPermission();
+    await NotificationService.instance.scheduleDailyReminder();
+  } catch (e) {
+    debugPrint('⚠️ Notification setup failed (non-fatal): $e');
+  }
 }
 
 class MyDiaryApp extends StatelessWidget {
@@ -63,6 +79,10 @@ class MyDiaryApp extends StatelessWidget {
             return _fadeRoute(const RegisterScreen(), settings);
           case '/home':
             return _fadeRoute(const HomeScreen(), settings);
+          case '/pin-entry':
+            return _fadeRoute(const PinEntryScreen(), settings);
+          case '/pin-setup':
+            return _slideRoute(const PinSetupScreen(), settings);
           case '/editor':
             final date = settings.arguments as String;
             return _slideRoute(

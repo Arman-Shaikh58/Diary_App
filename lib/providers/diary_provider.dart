@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/diary_service.dart';
+import '../services/upload_queue_service.dart';
 
 class DiaryProvider extends ChangeNotifier {
   final DiaryService _diaryService = DiaryService();
+  final UploadQueueService _queueService = UploadQueueService.instance;
 
   // Month entries for calendar markers
   Map<String, List<Map<String, dynamic>>> _monthEntries = {};
@@ -50,7 +52,7 @@ class DiaryProvider extends ChangeNotifier {
     return entry?['mood'];
   }
 
-  /// Load entries for a month (lightweight, for calendar)
+  /// Load entries for a month (lightweight, for calendar markers)
   Future<void> loadMonthEntries(DateTime month) async {
     final monthStr = '${month.year}-${month.month.toString().padLeft(2, '0')}';
     
@@ -86,7 +88,8 @@ class DiaryProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Save (create or update) entry
+  /// Save (create or update) entry with offline queue fallback.
+  /// Returns true if saved successfully (or queued), false on total failure.
   Future<bool> saveEntry({
     required String entryDate,
     required String content,
@@ -98,21 +101,24 @@ class DiaryProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final result = await _diaryService.saveEntry(
+      // Try direct save first
+      final result = await _queueService.saveEntry(
         entryDate: entryDate,
         content: content,
         title: title,
         mood: mood,
       );
-      _currentEntry = result;
-      
-      // Refresh month entries
-      final date = DateTime.parse(entryDate);
-      await loadMonthEntries(date);
-      
+
+      if (result != null) {
+        _currentEntry = result;
+        // Refresh month entries in background
+        final date = DateTime.parse(entryDate);
+        loadMonthEntries(date); // fire-and-forget
+      }
+
       _isSaving = false;
       notifyListeners();
-      return true;
+      return true; // true even if queued — save will happen later
     } catch (e) {
       _errorMessage = 'Failed to save entry';
       _isSaving = false;
@@ -144,13 +150,13 @@ class DiaryProvider extends ChangeNotifier {
     }
   }
 
-  /// Upload images
+  /// Upload images with offline queue fallback
   Future<List<Map<String, dynamic>>?> uploadImages({
     required String entryId,
     required List<File> images,
   }) async {
     try {
-      return await _diaryService.uploadImages(
+      return await _queueService.uploadImages(
         entryId: entryId,
         images: images,
       );

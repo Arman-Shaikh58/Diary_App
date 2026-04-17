@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../config/theme.dart';
 import '../providers/auth_provider.dart';
+import '../services/pin_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -52,9 +53,17 @@ class _SplashScreenState extends State<SplashScreen>
     await authProvider.checkAuthState();
 
     if (!mounted) return;
-
     if (authProvider.isLoggedIn) {
-      Navigator.of(context).pushReplacementNamed('/home');
+      final pinService = PinService();
+      final hasPin = await pinService.hasPin();
+      
+      if (!mounted) return;
+      
+      if (hasPin) {
+        Navigator.of(context).pushReplacementNamed('/pin-entry');
+      } else {
+        Navigator.of(context).pushReplacementNamed('/home');
+      }
     } else {
       Navigator.of(context).pushReplacementNamed('/login');
     }
@@ -142,10 +151,14 @@ class _SplashScreenState extends State<SplashScreen>
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.auto_stories_rounded,
-                        color: Colors.white,
-                        size: 48,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(28),
+                        child: Image.asset(
+                          'assets/logo.png',
+                          width: 100,
+                          height: 100,
+                          fit: BoxFit.cover,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 28),

@@ -115,6 +115,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         },
                       ),
                       const SizedBox(width: 8),
+                      // Security / PIN button
+                      _buildIconButton(
+                        icon: Icons.lock_outline_rounded,
+                        onTap: () {
+                          Navigator.of(context).pushNamed('/pin-setup');
+                        },
+                      ),
+                      const SizedBox(width: 8),
                       // Logout button
                       _buildIconButton(
                         icon: Icons.logout_rounded,

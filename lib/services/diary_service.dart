@@ -28,6 +28,9 @@ class DiaryService {
     } on DioException catch (e) {
       if (e.response?.statusCode == 404) return null;
       rethrow;
+    } catch (e) {
+      // Handle any unexpected errors (SocketException, etc.)
+      return null;
     }
   }
 
