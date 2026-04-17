@@ -1,0 +1,83 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String   @unique @db.VarChar(255)
+  username      String   @db.VarChar(100)
+  passwordHash  String   @map("password_hash")
+  encryptionKey String   @map("encryption_key")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  diaryEntries  DiaryEntry[]
+  entryImages   EntryImage[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model DiaryEntry {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  entryDate     DateTime @map("entry_date") @db.Date
+  title         String?  @db.VarChar(255)
+  contentCipher String   @map("content_cipher")
+  contentIv     String   @map("content_iv") @db.VarChar(64)
+  contentTag    String   @map("content_tag") @db.VarChar(64)
+  mood          String?  @db.VarChar(50)
+  isDeleted     Boolean  @default(false) @map("is_deleted")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  images EntryImage[]
+
+  @@unique([userId, entryDate], name: "uq_user_date")
+  @@index([userId, entryDate], name: "idx_entries_user_date")
+  @@map("diary_entries")
+}
+
+model EntryImage {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entryId      String   @map("entry_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  cloudinaryId String   @map("cloudinary_id")
+  url          String
+  secureUrl    String   @map("secure_url")
+  format       String   @db.VarChar(10)
+  width        Int?
+  height       Int?
+  bytes        BigInt?
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  entry DiaryEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([entryId], name: "idx_images_entry")
+  @@map("entry_images")
+}
+
+model RefreshToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], name: "idx_refresh_user")
+  @@map("refresh_tokens")
+}
